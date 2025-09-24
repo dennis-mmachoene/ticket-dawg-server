@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require('cors')
 const helmet = require('helmet')
-const morgan = require('morgab')
+const morgan = require('morgan')
 const rateLimit = require('express-rate-limit')
 const compression = require('compression')
 
@@ -12,7 +12,7 @@ const app = express();
 
 app.use(helmet())
 
-app.use(cors({ origin: process.env.FRONTEND_URL || ['http//localhost:3000', 'http://localhost:8081']}));
+app.use(cors({ origin: "*"}));
 
 app.use(compression())
 
@@ -48,7 +48,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes)
 app.use('/api/tickets', ticketRoutes)
 
-app.use('*', (req,res) => {
+app.use((req,res) => {
     res.status(404).json({error: 'Not found', path: req.originalUrl})
 
 })
