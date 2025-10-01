@@ -1,6 +1,23 @@
 const Ticket = require('../models/Ticket');
 const { sendTicketEmail } = require('../services/emailService');
+const ActivityLog = require('../models/ActivityLog');
 const crypto = require('crypto');
+
+// Helper function to log activity
+const logActivity = async (userId, action, details = {}, result = 'success', errorMessage = null) => {
+  try {
+    const activity = new ActivityLog({
+      user: userId,
+      action,
+      details,
+      result,
+      errorMessage,
+    });
+    await activity.save();
+  } catch (error) {
+    console.error('Failed to log activity:', error);
+  }
+};
 
 // Generate unique ticket ID
 const generateTicketID = () => {
@@ -83,6 +100,17 @@ const assignTicket = async (req, res) => {
     });
 
     if (existingTicket) {
+      // Log failed attempt
+      await logActivity(
+        req.user._id,
+        'ticket_issued',
+        {
+          ticketEmail: email.toLowerCase(),
+        },
+        'failure',
+        'Email already has a ticket assigned'
+      );
+
       return res.status(409).json({
         error: 'Email already has a ticket assigned',
         ticketID: existingTicket.ticketID,
@@ -92,6 +120,17 @@ const assignTicket = async (req, res) => {
     // Find an unused ticket
     const availableTicket = await Ticket.findOne({ status: 'unused' });
     if (!availableTicket) {
+      // Log failed attempt
+      await logActivity(
+        req.user._id,
+        'ticket_issued',
+        {
+          ticketEmail: email.toLowerCase(),
+        },
+        'failure',
+        'No tickets available'
+      );
+
       return res.status(400).json({
         error: 'No tickets available',
       });
@@ -112,6 +151,17 @@ const assignTicket = async (req, res) => {
         email: email.toLowerCase(),
       });
 
+      // Log successful ticket issuance
+      await logActivity(
+        req.user._id,
+        'ticket_issued',
+        {
+          ticketID: availableTicket.ticketID,
+          ticketEmail: email.toLowerCase(),
+        },
+        'success'
+      );
+
       res.json({
         success: true,
         message: 'Ticket assigned and email sent successfully',
@@ -128,6 +178,18 @@ const assignTicket = async (req, res) => {
       availableTicket.issuedBy = null;
       availableTicket.issuedAt = null;
       await availableTicket.save();
+
+      // Log failed ticket issuance
+      await logActivity(
+        req.user._id,
+        'ticket_issued',
+        {
+          ticketID: availableTicket.ticketID,
+          ticketEmail: email.toLowerCase(),
+        },
+        'failure',
+        emailError.message
+      );
 
       throw emailError;
     }
@@ -159,6 +221,17 @@ const validateTicket = async (req, res) => {
       .populate('usedBy', 'username');
 
     if (!ticket) {
+      // Log failed validation attempt
+      await logActivity(
+        req.user._id,
+        'ticket_validated',
+        {
+          qrCode: qrCode.substring(0, 8) + '...',
+        },
+        'failure',
+        'Invalid QR code'
+      );
+
       return res.status(404).json({
         error: 'Invalid QR code',
       });
@@ -166,6 +239,17 @@ const validateTicket = async (req, res) => {
 
     // Check ticket status
     if (ticket.status === 'unused') {
+      // Log warning
+      await logActivity(
+        req.user._id,
+        'ticket_validated',
+        {
+          ticketID: ticket.ticketID,
+        },
+        'warning',
+        'Ticket not assigned to anyone'
+      );
+
       return res.status(400).json({
         error: 'Ticket not assigned to anyone',
         status: 'unused',
@@ -173,6 +257,18 @@ const validateTicket = async (req, res) => {
     }
 
     if (ticket.status === 'used') {
+      // Log warning - already used
+      await logActivity(
+        req.user._id,
+        'ticket_validated',
+        {
+          ticketID: ticket.ticketID,
+          ticketEmail: ticket.email,
+        },
+        'warning',
+        'Ticket already used'
+      );
+
       return res.status(409).json({
         error: 'Ticket already used',
         status: 'used',
@@ -186,6 +282,17 @@ const validateTicket = async (req, res) => {
     ticket.usedAt = new Date();
     ticket.usedBy = req.user._id;
     await ticket.save();
+
+    // Log successful validation
+    await logActivity(
+      req.user._id,
+      'ticket_validated',
+      {
+        ticketID: ticket.ticketID,
+        ticketEmail: ticket.email,
+      },
+      'success'
+    );
 
     res.json({
       success: true,

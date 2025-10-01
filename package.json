@@ -14,7 +14,8 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "init-admin": "node scripts/initAdmin.js",
-    "init-tickets": "node scripts/initTickets.js"
+    "init-tickets": "node scripts/initTickets.js",
+    "test-logging": "node scripts/testActivityLogging.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
