@@ -5,59 +5,67 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const compression = require('compression');
 
-// Route imports
 const authRoutes = require('./routes/authRoutes');
 const ticketRoutes = require('./routes/ticketRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 
 const app = express();
 
-// Security middleware
 app.use(helmet());
 
-// CORS configuration
-app.use(cors({
-  origin: process.env.FRONTEND_URL || ['http://localhost:3000', 'http://localhost:8081'],
-  credentials: true,
-}));
+// CORS: allow the live site (any *.vercel.app, incl. preview URLs), an optional
+// explicit FRONTEND_URL, and local dev. Non-browser callers (no Origin) are allowed.
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://ticketdawg-web.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:8081',
+].filter(Boolean);
 
-// Compression middleware
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
+
 app.use(compression());
 
-// Rate limiting
+// General rate limit (raised so busy scanning/issuing is not blocked).
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-  },
+  windowMs: 15 * 60 * 1000,
+  max: 3000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this IP, please try again later.' },
 });
-
 app.use('/api', limiter);
 
-// Special rate limiting for auth endpoints
+// Tighter limit only on login attempts.
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // limit each IP to 10 login attempts per windowMs
-  message: {
-    error: 'Too many login attempts, please try again later.',
-  },
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts, please try again later.' },
 });
-
 app.use('/api/auth/login', authLimiter);
 
-// Logging
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else {
   app.use(morgan('combined'));
 }
 
-// Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
     success: true,
@@ -67,59 +75,30 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes
-app.use('/api/auth', authRoutes);
-app.use('/api/tickets', ticketRoutes);
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    error: 'Route not found',
-    path: req.originalUrl,
-  });
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'Pool Party Ticketing API. See /health.' });
 });
 
-// Global error handler
+app.use('/api/auth', authRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/activity', activityRoutes);
+
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found', path: req.originalUrl });
+});
+
 app.use((error, req, res, next) => {
   console.error('Global error handler:', error);
-
-  // Mongoose validation error
   if (error.name === 'ValidationError') {
-    return res.status(400).json({
-      error: 'Validation error',
-      details: Object.values(error.errors).map(err => err.message),
-    });
+    return res.status(400).json({ error: 'Validation error', details: Object.values(error.errors).map((e) => e.message) });
   }
-
-  // Mongoose cast error
-  if (error.name === 'CastError') {
-    return res.status(400).json({
-      error: 'Invalid ID format',
-    });
-  }
-
-  // JWT errors
-  if (error.name === 'JsonWebTokenError') {
-    return res.status(401).json({
-      error: 'Invalid token',
-    });
-  }
-
-  if (error.name === 'TokenExpiredError') {
-    return res.status(401).json({
-      error: 'Token expired',
-    });
-  }
-
-  // MongoDB duplicate key error
+  if (error.name === 'CastError') return res.status(400).json({ error: 'Invalid ID format' });
+  if (error.name === 'JsonWebTokenError') return res.status(401).json({ error: 'Invalid token' });
+  if (error.name === 'TokenExpiredError') return res.status(401).json({ error: 'Token expired' });
   if (error.code === 11000) {
     const field = Object.keys(error.keyValue)[0];
-    return res.status(409).json({
-      error: `${field} already exists`,
-    });
+    return res.status(409).json({ error: `${field} already exists` });
   }
-
-  // Default error
   res.status(error.status || 500).json({
     error: error.message || 'Internal server error',
     ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),

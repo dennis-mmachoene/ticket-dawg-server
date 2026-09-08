@@ -1,281 +1,220 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 
-// Helper function to log activity
+// A session is considered "active" until this many minutes of inactivity pass.
+const SESSION_IDLE_MS = (parseInt(process.env.SESSION_IDLE_MINUTES, 10) || 20) * 60 * 1000;
+
 const logActivity = async (userId, action, details = {}, result = 'success', errorMessage = null) => {
   try {
-    const activity = new ActivityLog({
-      user: userId,
-      action,
-      details,
-      result,
-      errorMessage,
-    });
-    await activity.save();
+    await ActivityLog.create({ user: userId, action, details, result, errorMessage });
   } catch (error) {
     console.error('Failed to log activity:', error);
   }
 };
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign(
-    { id: userId },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-  );
-};
+const generateToken = (userId, sid) =>
+  jwt.sign({ id: userId, sid }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  });
 
-// @desc    Login user
-// @route   POST /api/auth/login
-// @access  Public
+const publicUser = (user) => ({
+  id: user._id,
+  username: user.username,
+  email: user.email,
+  role: user.role,
+  permissions: user.permissions || [],
+});
+
+// @desc Login  @route POST /api/auth/login  @access Public
 const login = async (req, res) => {
   try {
     const { username, password } = req.body;
-
-    // Validation
     if (!username || !password) {
-      return res.status(400).json({
-        error: 'Username and password are required',
-      });
+      return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    // Find user
-    const user = await User.findOne({ 
-      username: username.toLowerCase() 
-    });
-
+    const user = await User.findOne({ username: username.toLowerCase() });
     if (!user || !user.isActive) {
-      return res.status(401).json({
-        error: 'Invalid credentials or account inactive',
-      });
+      return res.status(401).json({ error: 'Invalid credentials or account inactive' });
     }
 
-    // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      // Log failed login attempt
-      await logActivity(
-        user._id,
-        'login',
-        { username: username.toLowerCase() },
-        'failure',
-        'Invalid password'
-      );
+      await logActivity(user._id, 'login', { username: user.username }, 'failure', 'Invalid password');
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-      return res.status(401).json({
-        error: 'Invalid credentials',
+    // Single active session. Staff are blocked while a session is still active.
+    // The admin always takes over (kicks the old session) so they can never be locked out.
+    const now = Date.now();
+    const last = user.sessionLastActiveAt ? new Date(user.sessionLastActiveAt).getTime() : 0;
+    const sessionActive = user.activeSessionId && now - last < SESSION_IDLE_MS;
+
+    if (sessionActive && user.role !== 'admin') {
+      await logActivity(user._id, 'login', { username: user.username }, 'failure', 'Blocked: already signed in');
+      return res.status(409).json({
+        error:
+          'This account is already signed in on another device. Log out there first, wait a few minutes, or ask the admin to force a logout.',
+        code: 'SESSION_ACTIVE',
       });
     }
 
-    // Generate token
-    const token = generateToken(user._id);
+    const sid = crypto.randomUUID();
+    user.activeSessionId = sid;
+    user.sessionLastActiveAt = new Date(now);
+    await user.save();
 
-    // Log successful login
-    await logActivity(
-      user._id,
-      'login',
-      { username: username.toLowerCase() },
-      'success'
-    );
+    const token = generateToken(user._id, sid);
+    await logActivity(user._id, 'login', { username: user.username }, 'success');
 
     res.json({
       success: true,
       message: 'Login successful',
-      data: {
-        token,
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-        },
-      },
+      data: { token, user: publicUser(user) },
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
-      error: 'Server error during login',
-    });
+    res.status(500).json({ error: 'Server error during login' });
   }
 };
 
-// @desc    Register new user (Admin only)
-// @route   POST /api/auth/register
-// @access  Private (Admin only)
+// @desc Logout  @route POST /api/auth/logout  @access Private
+const logout = async (req, res) => {
+  try {
+    req.user.activeSessionId = null;
+    req.user.sessionLastActiveAt = null;
+    await req.user.save();
+    await logActivity(req.user._id, 'logout', { username: req.user.username }, 'success');
+    res.json({ success: true, message: 'Logged out' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Server error during logout' });
+  }
+};
+
+// @desc Create staff user  @route POST /api/auth/register  @access Admin
 const register = async (req, res) => {
   try {
-    const { username, email, password, role = 'issuer' } = req.body;
-
-    // Validation
+    let { username, email, password, permissions } = req.body;
     if (!username || !email || !password) {
-      return res.status(400).json({
-        error: 'Username, email, and password are required',
-      });
+      return res.status(400).json({ error: 'Username, email, and password are required' });
     }
-
     if (password.length < 6) {
-      return res.status(400).json({
-        error: 'Password must be at least 6 characters long',
-      });
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
     }
 
-    // Check if user already exists
+    const allowed = ['issue', 'scan'];
+    permissions = Array.isArray(permissions) ? permissions.filter((p) => allowed.includes(p)) : [];
+    if (permissions.length === 0) {
+      return res.status(400).json({ error: 'Select at least one role: Ticketer (issue) and/or Scanner (scan)' });
+    }
+
     const existingUser = await User.findOne({
-      $or: [
-        { username: username.toLowerCase() },
-        { email: email.toLowerCase() }
-      ]
+      $or: [{ username: username.toLowerCase() }, { email: email.toLowerCase() }],
     });
-
     if (existingUser) {
-      return res.status(409).json({
-        error: 'User with this username or email already exists',
-      });
+      return res.status(409).json({ error: 'User with this username or email already exists' });
     }
 
-    // Create user
+    // Staff only. The super admin is seeded, never created here.
     const newUser = new User({
       username: username.toLowerCase(),
       email: email.toLowerCase(),
       password,
-      role,
+      role: 'staff',
+      permissions,
       createdBy: req.user._id,
     });
-
     await newUser.save();
+    await logActivity(req.user._id, 'user_created', { targetUser: newUser.username }, 'success');
 
-    // Log user creation
-    await logActivity(
-      req.user._id,
-      'user_created',
-      {
-        targetUser: newUser.username,
-        targetEmail: newUser.email,
-        targetRole: newUser.role,
-      },
-      'success'
-    );
-
-    res.status(201).json({
-      success: true,
-      message: 'User created successfully',
-      data: {
-        user: {
-          id: newUser._id,
-          username: newUser.username,
-          email: newUser.email,
-          role: newUser.role,
-          createdAt: newUser.createdAt,
-        },
-      },
-    });
+    res.status(201).json({ success: true, message: 'User created successfully', data: { user: publicUser(newUser) } });
   } catch (error) {
     console.error('Registration error:', error);
-    
     if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        error: 'Validation error',
-        details: Object.values(error.errors).map(err => err.message),
-      });
+      return res.status(400).json({ error: 'Validation error', details: Object.values(error.errors).map((e) => e.message) });
     }
-
-    res.status(500).json({
-      error: 'Server error during registration',
-    });
+    res.status(500).json({ error: 'Server error during registration' });
   }
 };
 
-// @desc    Get current user profile
-// @route   GET /api/auth/me
-// @access  Private
+// @desc Get current user  @route GET /api/auth/me  @access Private
 const getProfile = async (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      user: req.user,
-    },
-  });
+  res.json({ success: true, data: { user: publicUser(req.user) } });
 };
 
-// @desc    Get all users (Admin only)
-// @route   GET /api/auth/users
-// @access  Private (Admin only)
+// @desc List users  @route GET /api/auth/users  @access Admin
 const getUsers = async (req, res) => {
   try {
+    const now = Date.now();
     const users = await User.find({ isActive: true })
       .select('-password')
       .populate('createdBy', 'username')
       .sort({ createdAt: -1 });
 
-    res.json({
-      success: true,
-      data: {
-        users,
-        count: users.length,
-      },
+    const mapped = users.map((u) => {
+      const last = u.sessionLastActiveAt ? new Date(u.sessionLastActiveAt).getTime() : 0;
+      const online = !!u.activeSessionId && now - last < SESSION_IDLE_MS;
+      return {
+        id: u._id,
+        username: u.username,
+        email: u.email,
+        role: u.role,
+        permissions: u.permissions || [],
+        createdAt: u.createdAt,
+        createdBy: u.createdBy,
+        online,
+        lastActiveAt: u.sessionLastActiveAt,
+      };
     });
+
+    res.json({ success: true, data: { users: mapped, count: mapped.length } });
   } catch (error) {
     console.error('Get users error:', error);
-    res.status(500).json({
-      error: 'Server error fetching users',
-    });
+    res.status(500).json({ error: 'Server error fetching users' });
   }
 };
 
-// @desc    Delete user (Admin only)
-// @route   DELETE /api/auth/users/:id
-// @access  Private (Admin only)
+// @desc Deactivate user  @route DELETE /api/auth/users/:id  @access Admin
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Prevent admin from deleting themselves
     if (id === req.user._id.toString()) {
-      return res.status(400).json({
-        error: 'Cannot delete your own account',
-      });
+      return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-
     const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({
-        error: 'User not found',
-      });
-    }
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.role === 'admin') return res.status(403).json({ error: 'Cannot delete the super admin' });
 
-    // Soft delete by setting isActive to false
     user.isActive = false;
+    user.activeSessionId = null;
+    user.sessionLastActiveAt = null;
     await user.save();
+    await logActivity(req.user._id, 'user_deleted', { targetUser: user.username }, 'success');
 
-    // Log user deletion
-    await logActivity(
-      req.user._id,
-      'user_deleted',
-      {
-        targetUser: user.username,
-        targetEmail: user.email,
-      },
-      'success'
-    );
-
-    res.json({
-      success: true,
-      message: 'User deactivated successfully',
-    });
+    res.json({ success: true, message: 'User deactivated successfully' });
   } catch (error) {
     console.error('Delete user error:', error);
-    res.status(500).json({
-      error: 'Server error deleting user',
-    });
+    res.status(500).json({ error: 'Server error deleting user' });
   }
 };
 
-module.exports = {
-  login,
-  register,
-  getProfile,
-  getUsers,
-  deleteUser,
+// @desc Force a user's session to end  @route POST /api/auth/users/:id/force-logout  @access Admin
+const forceLogout = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    user.activeSessionId = null;
+    user.sessionLastActiveAt = null;
+    await user.save();
+    res.json({ success: true, message: `${user.username} has been logged out` });
+  } catch (error) {
+    console.error('Force logout error:', error);
+    res.status(500).json({ error: 'Server error forcing logout' });
+  }
 };
+
+module.exports = { login, logout, register, getProfile, getUsers, deleteUser, forceLogout };
