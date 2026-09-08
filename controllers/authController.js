@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
+const { sendAccountEmail } = require('../services/emailService');
 
 // A session is considered "active" until this many minutes of inactivity pass.
 const SESSION_IDLE_MS = (parseInt(process.env.SESSION_IDLE_MINUTES, 10) || 20) * 60 * 1000;
@@ -129,6 +130,13 @@ const register = async (req, res) => {
     });
     await newUser.save();
     await logActivity(req.user._id, 'user_created', { targetUser: newUser.username }, 'success');
+
+    // Email the new user their login details (do not fail creation if this fails)
+    try {
+      await sendAccountEmail({ email: newUser.email, username: newUser.username, password, permissions });
+    } catch (mailErr) {
+      console.error('Account email failed (user still created):', mailErr.message);
+    }
 
     res.status(201).json({ success: true, message: 'User created successfully', data: { user: publicUser(newUser) } });
   } catch (error) {

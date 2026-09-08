@@ -96,7 +96,7 @@ const assignTicket = async (req, res) => {
     }
   } catch (error) {
     console.error('Assign ticket error:', error);
-    res.status(500).json({ error: 'Server error assigning ticket', details: error.message });
+    res.status(500).json({ error: error.message || 'Server error assigning ticket' });
   }
 };
 
