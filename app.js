@@ -11,6 +11,9 @@ const activityRoutes = require('./routes/activityRoutes');
 
 const app = express();
 
+// Behind Render's proxy: trust the first proxy so rate-limiting reads the real client IP.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 
 // CORS: allow the live site (any *.vercel.app, incl. preview URLs), an optional

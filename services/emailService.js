@@ -1,6 +1,7 @@
 // emailService.js
-// Prefers Gmail SMTP (best inbox placement for a @gmail.com sender) when
-// GMAIL_USER + GMAIL_APP_PASSWORD are set; otherwise falls back to SendGrid.
+// Tries Gmail SMTP when GMAIL_USER + GMAIL_APP_PASSWORD are set, but Render's
+// free tier blocks outbound SMTP, so it falls back to SendGrid (HTTPS) on any
+// connection failure. SendGrid is the reliable transport on Render.
 const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
@@ -8,13 +9,17 @@ const sgMail = require('@sendgrid/mail');
 const { generateTicketPDF } = require('./pdfService');
 
 const useGmail = !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
-if (!useGmail && process.env.SENDGRID_API_KEY) sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const FROM_NAME = 'ActionSA Students Chapter TUT';
+const APP_URL = process.env.FRONTEND_URL || 'https://ticketdawg-web.vercel.app';
 
 let transporter = null;
 if (useGmail) {
   transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 8000,
   });
 }
 
@@ -25,24 +30,52 @@ try {
   console.warn('Logo not found for email, continuing without it.');
 }
 
-const APP_URL = process.env.FRONTEND_URL || 'https://ticketdawg-web.vercel.app';
-const FROM_NAME = 'ActionSA Students Chapter TUT';
+const friendlyEmailError = (error) => {
+  const code = error && error.responseCode;
+  const resp = `${(error && error.response) || ''} ${(error && error.message) || ''}`.toLowerCase();
+  const isDaily = resp.includes('5.4.5') || resp.includes('sending limit') || resp.includes('quota') || (resp.includes('daily') && resp.includes('limit'));
+  if (isDaily) return 'Daily email limit reached. Please try again tomorrow.';
+  if (code === 421 || code === 454 || resp.includes('try again later') || resp.includes('rate limit') || resp.includes('too many')) return 'Email is busy right now. Wait a minute and try again.';
+  if (resp.includes('invalid login') || resp.includes('badcredentials') || resp.includes('username and password not accepted')) return 'Email login failed. Check the email settings.';
+  if (resp.includes('5.1.1') || resp.includes('no such user') || resp.includes('recipient address rejected')) return 'The recipient email address looks invalid.';
+  return `Could not send the email: ${(error && error.message) || 'unknown error'}`;
+};
 
-// Deliver via Gmail or SendGrid. `pdf` optional: { filename, buffer }.
-const deliver = async ({ to, subject, html, text, pdf }) => {
+const sendViaSendGrid = async ({ to, subject, html, text, pdf }) => {
+  if (!process.env.SENDGRID_API_KEY) throw new Error('SendGrid is not configured');
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  const attachments = [];
+  if (pdf) attachments.push({ content: pdf.buffer.toString('base64'), filename: pdf.filename, type: 'application/pdf', disposition: 'attachment' });
+  if (logoBuffer) attachments.push({ content: logoBuffer.toString('base64'), filename: 'action-sa-logo.png', type: 'image/png', disposition: 'inline', content_id: 'asalogo' });
+  await sgMail.send({ to, from: { name: FROM_NAME, email: process.env.EMAIL_FROM }, subject, text, html, attachments });
+  console.log('✅ Email sent via SendGrid to', to);
+};
+
+const sendViaGmail = async ({ to, subject, html, text, pdf }) => {
+  const attachments = [];
+  if (pdf) attachments.push({ filename: pdf.filename, content: pdf.buffer });
+  if (logoBuffer) attachments.push({ filename: 'action-sa-logo.png', content: logoBuffer, cid: 'asalogo' });
+  await transporter.sendMail({ from: `${FROM_NAME} <${process.env.GMAIL_USER}>`, to, subject, text, html, attachments });
+  console.log('✅ Email sent via Gmail to', to);
+};
+
+const deliver = async (msg) => {
   if (useGmail) {
-    const attachments = [];
-    if (pdf) attachments.push({ filename: pdf.filename, content: pdf.buffer });
-    if (logoBuffer) attachments.push({ filename: 'action-sa-logo.png', content: logoBuffer, cid: 'asalogo' });
-    await transporter.sendMail({ from: `${FROM_NAME} <${process.env.GMAIL_USER}>`, to, subject, text, html, attachments });
-    console.log('✅ Email sent via Gmail to', to);
-  } else {
-    const attachments = [];
-    if (pdf) attachments.push({ content: pdf.buffer.toString('base64'), filename: pdf.filename, type: 'application/pdf', disposition: 'attachment' });
-    if (logoBuffer) attachments.push({ content: logoBuffer.toString('base64'), filename: 'action-sa-logo.png', type: 'image/png', disposition: 'inline', content_id: 'asalogo' });
-    await sgMail.send({ to, from: { name: FROM_NAME, email: process.env.EMAIL_FROM }, subject, text, html, attachments });
-    console.log('✅ Email sent via SendGrid to', to);
+    try {
+      await sendViaGmail(msg);
+      return;
+    } catch (err) {
+      const m = `${err.code || ''} ${err.message || ''}`.toLowerCase();
+      const isConn = m.includes('timeout') || m.includes('etimedout') || m.includes('econn') || m.includes('esocket') || m.includes('greeting');
+      if (isConn && process.env.SENDGRID_API_KEY) {
+        console.warn('Gmail SMTP unavailable, falling back to SendGrid:', err.message);
+        await sendViaSendGrid(msg);
+        return;
+      }
+      throw err;
+    }
   }
+  await sendViaSendGrid(msg);
 };
 
 const header = (title, subtitle) => `
@@ -64,17 +97,6 @@ const shell = (inner) => `
       ${inner}
     </div>
   </div>`;
-
-const friendlyEmailError = (error) => {
-  const code = error && error.responseCode;
-  const resp = `${(error && error.response) || ''} ${(error && error.message) || ''}`.toLowerCase();
-  const isDaily = resp.includes('5.4.5') || resp.includes('sending limit') || resp.includes('quota') || (resp.includes('daily') && resp.includes('limit'));
-  if (isDaily) return 'Daily email limit reached. Please try again tomorrow.';
-  if (code === 421 || code === 454 || resp.includes('try again later') || resp.includes('rate limit') || resp.includes('too many')) return 'Email is busy right now. Wait a minute and try again.';
-  if (resp.includes('invalid login') || resp.includes('badcredentials') || resp.includes('username and password not accepted')) return 'Email login failed. Check the Gmail app password in Render settings.';
-  if (resp.includes('5.1.1') || resp.includes('no such user') || resp.includes('recipient address rejected')) return 'The recipient email address looks invalid.';
-  return `Could not send the email: ${(error && error.message) || 'unknown error'}`;
-};
 
 const sendTicketEmail = async (ticketData) => {
   try {
@@ -117,13 +139,7 @@ const sendTicketEmail = async (ticketData) => {
       `Bring your towel. Snacks and refreshments provided.\n\n` +
       `Contact: Wandile (Chairperson) 073 338 6129\n\n#The Future is not a mistake`;
 
-    await deliver({
-      to: ticketData.email,
-      subject: 'Your Pool Party Ticket – ActionSA Students Chapter TUT',
-      html,
-      text,
-      pdf: { filename: `pool-party-ticket-${ticketData.ticketID}.pdf`, buffer: pdfBuffer },
-    });
+    await deliver({ to: ticketData.email, subject: 'Your Pool Party Ticket – ActionSA Students Chapter TUT', html, text, pdf: { filename: `pool-party-ticket-${ticketData.ticketID}.pdf`, buffer: pdfBuffer } });
     return { success: true };
   } catch (error) {
     console.error('❌ Ticket email failed:', error.response?.body || error.response || error.message);
@@ -131,19 +147,14 @@ const sendTicketEmail = async (ticketData) => {
   }
 };
 
-// Sent when an admin creates a ticketer/scanner so they get their login details.
 const sendAccountEmail = async ({ email, username, password, permissions }) => {
   const labels = (permissions || []).map((p) => (p === 'issue' ? 'issue tickets (Ticketer)' : 'scan tickets (Scanner)'));
   const rolesText = labels.length ? labels.join(' and ') : 'help run the event';
-
   const html = shell(`
     ${header('Your Account', 'ActionSA Students Chapter · TUT')}
     <div style="padding:30px;">
       <h2 style="color:#009739; margin-top:0;">You've been added</h2>
-      <p style="color:#333; line-height:1.6;">
-        You have been added to the <strong>ActionSA Students Chapter Pool Party ticketing system</strong>.
-        Your role is to <strong>${rolesText}</strong>.
-      </p>
+      <p style="color:#333; line-height:1.6;">You have been added to the <strong>ActionSA Students Chapter Pool Party ticketing system</strong>. Your role is to <strong>${rolesText}</strong>.</p>
       <div style="background:#f9f9f9; padding:20px; border-radius:8px; margin:20px 0; border-left:4px solid #009739;">
         <h3 style="color:#009739; margin-top:0;">Your login details</h3>
         <p style="margin:4px 0;"><strong>Website:</strong> <a href="${APP_URL}" style="color:#009739;">${APP_URL}</a></p>
@@ -151,17 +162,12 @@ const sendAccountEmail = async ({ email, username, password, permissions }) => {
         <p style="margin:4px 0;"><strong>Password:</strong> ${password}</p>
       </div>
       <p style="color:#333; line-height:1.6;">Please keep these details private. Only one person can be logged into an account at a time.</p>
-      <p style="color:#333; line-height:1.6;">Questions? Contact <strong>Wandile (Chairperson)</strong> @ <a href="tel:0733386129" style="color:#009739;">073 338 6129</a>.</p>
     </div>
     ${footer}`);
-
   const text =
     `You've been added to the ActionSA Students Chapter Pool Party ticketing system.\n\n` +
-    `Your role: ${rolesText}.\n\n` +
-    `Login details:\nWebsite: ${APP_URL}\nUsername: ${username}\nPassword: ${password}\n\n` +
-    `Please keep these private. Only one person can be logged into an account at a time.\n\n` +
-    `Contact: Wandile (Chairperson) 073 338 6129`;
-
+    `Your role: ${rolesText}.\n\nLogin details:\nWebsite: ${APP_URL}\nUsername: ${username}\nPassword: ${password}\n\n` +
+    `Please keep these private. Only one person can be logged into an account at a time.`;
   await deliver({ to: email, subject: 'Your ActionSA Pool Party ticketing account', html, text });
   return { success: true };
 };

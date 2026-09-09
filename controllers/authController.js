@@ -225,4 +225,26 @@ const forceLogout = async (req, res) => {
   }
 };
 
-module.exports = { login, logout, register, getProfile, getUsers, deleteUser, forceLogout };
+// @desc Update a user's roles  @route PATCH /api/auth/users/:id/permissions  @access Admin
+const updateUserPermissions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    let { permissions } = req.body;
+    const allowed = ['issue', 'scan'];
+    permissions = Array.isArray(permissions) ? permissions.filter((x) => allowed.includes(x)) : [];
+    if (permissions.length === 0) {
+      return res.status(400).json({ error: 'Select at least one role: Ticketer (issue) and/or Scanner (scan)' });
+    }
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.role === 'admin') return res.status(403).json({ error: 'Cannot change the super admin roles' });
+    user.permissions = permissions;
+    await user.save();
+    res.json({ success: true, message: 'Roles updated', data: { user: publicUser(user) } });
+  } catch (error) {
+    console.error('Update permissions error:', error);
+    res.status(500).json({ error: 'Server error updating roles' });
+  }
+};
+
+module.exports = { login, logout, register, getProfile, getUsers, deleteUser, forceLogout, updateUserPermissions };

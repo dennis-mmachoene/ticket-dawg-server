@@ -30,7 +30,6 @@ const ticketSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-ticketSchema.index({ qrCode: 1 });
 ticketSchema.index({ status: 1 });
 ticketSchema.index({ email: 1 });
 
