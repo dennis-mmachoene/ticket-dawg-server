@@ -116,7 +116,11 @@ const register = async (req, res) => {
       $or: [{ username: username.toLowerCase() }, { email: email.toLowerCase() }],
     });
     if (existingUser) {
-      return res.status(409).json({ error: 'User with this username or email already exists' });
+      if (existingUser.isActive) {
+        return res.status(409).json({ error: 'User with this username or email already exists' });
+      }
+      // Old record was removed before; clear it so the username/email can be reused
+      await User.deleteOne({ _id: existingUser._id });
     }
 
     // Staff only. The super admin is seeded, never created here.
@@ -196,13 +200,11 @@ const deleteUser = async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.role === 'admin') return res.status(403).json({ error: 'Cannot delete the super admin' });
 
-    user.isActive = false;
-    user.activeSessionId = null;
-    user.sessionLastActiveAt = null;
-    await user.save();
-    await logActivity(req.user._id, 'user_deleted', { targetUser: user.username }, 'success');
+    const removedName = user.username;
+    await User.deleteOne({ _id: user._id });
+    await logActivity(req.user._id, 'user_deleted', { targetUser: removedName }, 'success');
 
-    res.json({ success: true, message: 'User deactivated successfully' });
+    res.json({ success: true, message: 'User removed successfully' });
   } catch (error) {
     console.error('Delete user error:', error);
     res.status(500).json({ error: 'Server error deleting user' });
