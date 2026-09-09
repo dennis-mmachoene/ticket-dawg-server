@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const { login, logout, register, getProfile, getUsers, deleteUser, forceLogout, updateUserPermissions } = require('../controllers/authController');
+const { login, logout, register, getProfile, getUsers, deleteUser, forceLogout, updateUserPermissions, changePassword } = require('../controllers/authController');
 const { authenticate, requireAdmin } = require('../middleware/authMiddleware');
 
 router.post('/login', login);
@@ -7,6 +7,7 @@ router.post('/login', login);
 router.use(authenticate);
 
 router.post('/logout', logout);
+router.post('/change-password', changePassword);
 router.get('/me', getProfile);
 router.post('/register', requireAdmin, register);
 router.get('/users', requireAdmin, getUsers);

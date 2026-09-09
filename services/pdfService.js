@@ -33,23 +33,25 @@ const generateTicketPDF = async (ticketData) => {
         .text('Time: 12:00 till late', 92, 81)
         .text('Venue: Ramawela Guest House', 92, 96);
 
-      doc.fillColor(green).fontSize(10).text(`Issued to: ${ticketData.email}`, 22, 130, { width: 400 });
+      doc.fillColor(green).fontSize(10).text(`Issued to: ${ticketData.email}`, 22, 128, { width: 400 });
+      doc.fillColor(black).font('Helvetica-Bold').fontSize(11).text(`Ticket ID: ${ticketData.ticketID}`, 22, 144, { width: 400 });
+      doc.font('Helvetica');
 
       doc.image(qrBuffer, 470, 58, { width: 108 });
 
       doc.fillColor(black).fontSize(9)
-        .text('• Present this ticket at entrance', 22, 165, { width: 430 })
-        .text('• Valid for one entry only', 22, 181, { width: 430 })
-        .text('• Bring your towel', 22, 197, { width: 430 })
-        .text('• Snacks & refreshments provided', 22, 213, { width: 430 })
-        .text('• Music, food, swimming & good vibes', 22, 229, { width: 430 });
+        .text('• Present this ticket at entrance', 22, 170, { width: 430 })
+        .text('• Valid for one entry only', 22, 186, { width: 430 })
+        .text('• Bring your towel', 22, 202, { width: 430 })
+        .text('• Snacks & refreshments provided', 22, 218, { width: 430 })
+        .text('• Music, food, swimming & good vibes', 22, 234, { width: 430 });
 
       doc.fillColor(green).fontSize(8)
-        .text('Non-transferable. Entry subject to verification.', 22, 258, { width: 500 })
-        .text('Contact: Wandile (Chairperson) 073 338 6129', 22, 272, { width: 500 });
+        .text('Non-transferable. Entry subject to verification.', 22, 260, { width: 500 })
+        .text('Contact: Wandile (Chairperson) 073 338 6129', 22, 274, { width: 500 });
 
       doc.fillColor(black).font('Helvetica-Bold').fontSize(10)
-        .text('#The Future is not a mistake', 0, 298, { width: doc.page.width, align: 'center' });
+        .text('#The Future is not a mistake', 0, 300, { width: doc.page.width, align: 'center' });
 
       doc.end();
     } catch (error) {

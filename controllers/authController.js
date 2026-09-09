@@ -1,19 +1,11 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
-const ActivityLog = require('../models/ActivityLog');
 const { sendAccountEmail } = require('../services/emailService');
+const { logActivity } = require('../utils/activityLogger');
 
 // A session is considered "active" until this many minutes of inactivity pass.
 const SESSION_IDLE_MS = (parseInt(process.env.SESSION_IDLE_MINUTES, 10) || 20) * 60 * 1000;
-
-const logActivity = async (userId, action, details = {}, result = 'success', errorMessage = null) => {
-  try {
-    await ActivityLog.create({ user: userId, action, details, result, errorMessage });
-  } catch (error) {
-    console.error('Failed to log activity:', error);
-  }
-};
 
 const generateToken = (userId, sid) =>
   jwt.sign({ id: userId, sid }, process.env.JWT_SECRET, {
@@ -38,6 +30,7 @@ const login = async (req, res) => {
 
     const user = await User.findOne({ username: username.toLowerCase() });
     if (!user || !user.isActive) {
+      await logActivity(null, 'login', { username: username.toLowerCase() }, 'failure', user ? 'Account inactive' : 'No such user');
       return res.status(401).json({ error: 'Invalid credentials or account inactive' });
     }
 
@@ -220,6 +213,7 @@ const forceLogout = async (req, res) => {
     user.activeSessionId = null;
     user.sessionLastActiveAt = null;
     await user.save();
+    await logActivity(req.user._id, 'user_updated', { targetUser: user.username, note: 'force logout' }, 'success');
     res.json({ success: true, message: `${user.username} has been logged out` });
   } catch (error) {
     console.error('Force logout error:', error);
@@ -242,6 +236,7 @@ const updateUserPermissions = async (req, res) => {
     if (user.role === 'admin') return res.status(403).json({ error: 'Cannot change the super admin roles' });
     user.permissions = permissions;
     await user.save();
+    await logActivity(req.user._id, 'user_updated', { targetUser: user.username, permissions }, 'success');
     res.json({ success: true, message: 'Roles updated', data: { user: publicUser(user) } });
   } catch (error) {
     console.error('Update permissions error:', error);
@@ -249,4 +244,22 @@ const updateUserPermissions = async (req, res) => {
   }
 };
 
-module.exports = { login, logout, register, getProfile, getUsers, deleteUser, forceLogout, updateUserPermissions };
+// @desc Change own password  @route POST /api/auth/change-password  @access Private
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Current and new password are required' });
+    if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    const user = await User.findById(req.user._id);
+    const ok = await user.comparePassword(currentPassword);
+    if (!ok) return res.status(401).json({ error: 'Current password is incorrect' });
+    user.password = newPassword;
+    await user.save();
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Server error changing password' });
+  }
+};
+
+module.exports = { login, logout, register, getProfile, getUsers, deleteUser, forceLogout, updateUserPermissions, changePassword };

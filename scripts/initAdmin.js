@@ -21,6 +21,7 @@ const initializeAdmin = async () => {
       email: process.env.ADMIN_EMAIL || 'admin@actionsa.org.za',
       password: process.env.ADMIN_PASSWORD || 'AdminPassword123!',
       role: 'admin',
+      permissions: ['issue', 'scan'],
     };
 
     const admin = new User(adminData);

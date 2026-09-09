@@ -17,15 +17,16 @@ const runSeed = async () => {
     // 1) Seed the single super admin (dennis) if no admin exists yet.
     const adminExists = await User.findOne({ role: 'admin' });
     if (!adminExists) {
-      const username = (process.env.ADMIN_USERNAME || 'dennis').toLowerCase();
-      const email = (process.env.ADMIN_EMAIL || 'dennism.ramara@gmail.com').toLowerCase();
-      const password = process.env.ADMIN_PASSWORD || 'ChangeMe123!';
-      if (!process.env.ADMIN_PASSWORD) {
-        console.warn('⚠️ ADMIN_PASSWORD is not set. Using a temporary fallback. Set ADMIN_PASSWORD on Render.');
+      const password = process.env.ADMIN_PASSWORD;
+      if (!password) {
+        console.error('❌ ADMIN_PASSWORD is not set. Skipping admin seed for safety. Set ADMIN_PASSWORD on Render and redeploy.');
+      } else {
+        const username = (process.env.ADMIN_USERNAME || 'dennis').toLowerCase();
+        const email = (process.env.ADMIN_EMAIL || 'dennism.ramara@gmail.com').toLowerCase();
+        const admin = new User({ username, email, password, role: 'admin', permissions: ['issue', 'scan'] });
+        await admin.save();
+        console.log(`✅ Seeded super admin: ${username}`);
       }
-      const admin = new User({ username, email, password, role: 'admin', permissions: ['issue', 'scan'] });
-      await admin.save();
-      console.log(`✅ Seeded super admin: ${username}`);
     }
 
     // 2) Seed tickets once, if INITIAL_TICKETS is set and there are none.

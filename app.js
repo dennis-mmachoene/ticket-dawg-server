@@ -29,7 +29,7 @@ app.use(
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin)) {
+      if (allowedOrigins.includes(origin) || /\.dennis-mmachoenes-projects\.vercel\.app$/.test(origin)) {
         return callback(null, true);
       }
       return callback(new Error('Not allowed by CORS'));

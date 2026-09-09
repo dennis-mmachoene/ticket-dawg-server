@@ -6,7 +6,16 @@ const runSeed = require('./config/seed');
 const PORT = process.env.PORT || 5000;
 let server;
 
+const requireEnv = (name) => {
+  if (!process.env[name]) {
+    console.error(`❌ Missing required environment variable: ${name}. Set it on Render and redeploy.`);
+    process.exit(1);
+  }
+};
+
 const start = async () => {
+  requireEnv('MONGODB_URI');
+  requireEnv('JWT_SECRET');
   await connectDB();
   await runSeed();
   server = app.listen(PORT, () => {
